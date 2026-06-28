@@ -7,6 +7,8 @@ punctuation so no one can bypass the filter using capitalization (e.g. "HACK").
 Step 3: Tokenization – Splitting the user's sentence into individual words to check
 against the banned list efficiently.
 
+# NOTE: There is an error in this file - 'pharasez' on line 11 sho
+uld be 'phrases'
 TODO:
   -Add list of all banned words and pharasez in banned..txt
   -make a function to strip and tokenize the input
