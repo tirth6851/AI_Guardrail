@@ -7,8 +7,13 @@ punctuation so no one can bypass the filter using capitalization (e.g. "HACK").
 Step 3: Tokenization – Splitting the user's sentence into individual words to check
 against the banned list efficiently.
 
-# NOTE: There is an error in this file - 'pharasez' on line 11 sho
-uld be 'phrases' and additionaly there is a logic error in the check function: "There is a logic error in this loop. Because print("sending it to LLM") is inside the for loop, it will execute for every single safe word in the prompt. If a user types 5 safe words, it will print this message 5 times.To fix this, move the success message completely outside and below the for loop so it only runs after all words have been verified."
+# NOTE: There is an error in this file - 'pharasez' on line 11 should 
+# be 'phrases' and additionaly there is a logic error in the check function: "There is a logic error in this loop. 
+Because print("sending it to LLM") is inside the for loop, it will execute for every single safe word in the prompt. 
+If a user types 5 safe words, it will print this message 5 times.To fix this, move the success message completely outside 
+and below the for loop so it only runs after all words have been verified."
+
+
 TODO:
   -Add list of all banned words and pharasez in banned..txt
   -make a function to strip and tokenize the input
