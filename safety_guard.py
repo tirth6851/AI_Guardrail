@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+from groq import Groq
+import os
 import re
 """
 Step 1: File I/O – Reading from an external banned.txt file instead of hardcoding
@@ -19,29 +22,44 @@ TODO:
   -make a function to strip and tokenize the input
   -make the algo to scan if the input is banned or not  
 """
+load_dotenv()
+key = os.getenv("GROQ_API_KEY")
+client=Groq(api_key=key)
+user_input=None
 def tokenization():
-  user_input = [item for item in re.split(r'(\W+)', input("Please input your prompt here:").strip().casefold()) if item.strip()]
-  #.strip()-> remove white space 
-  #.casefold()-> make all small aphabates
-  #.split()-> split to tokeniz
-  return user_input
+  global user_input
+  user_input = input("Please input your prompt here:").strip().casefold()
+  return [item for item in re.split(r'(\W+)', user_input) if item.strip()]
 
-def check():
-  TokenizedPromt=tokenization()
+TokenizedPromt=tokenization()
+def promtVerification():
   with open("banned.txt","r") as file:
     bannedList=file.read().split()
     for word in TokenizedPromt:
       if word in bannedList:
         print("FLAGGED: Prompt is illegal")
-        return
-      print("sending it to LLM")
-
+        return False
+  print("sending it to LLM")
+  return True
 
 def main():
-  check()
+  if promtVerification() is True:
+    LLMrequest()
+
+
+
+def LLMrequest():
+  responce = client.chat.completions.create(
+    model = "llama-3.3-70b-versatile",
+    messages= [{"role": "user", "content": user_input}]
+  )
+  print(responce.choices[0].message.content)
+
+
+
 
 if __name__ == "__main__":
-    main()
+  main()
 
 
 
