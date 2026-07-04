@@ -6,44 +6,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Purpose
 
-**AI Guardrail** is a multi-phase Python project that combines content safety filtering with AI integration. It validates user prompts against a banned-word list, then sends safe prompts to the Groq AI API (`llama-3.3-70b-versatile` model) for processing.
+**AI Guardrail** is a multi-phase Python project that combines content safety filtering with AI integration. A user prompt passes through layered defenses — a local banned-word filter, then a local ML classifier — before it's allowed to reach the Groq AI API (`llama-3.3-70b-versatile`), and the model's answer is classified again before it reaches the user.
 
 ---
 
 ## Architecture & Data Flow
 
+The pipeline lives in `guardrail/` as plain functions — no `input()`, no `print()`, no globals. `safety_guard.py` (and later `cli.py`) is a thin shell that calls it.
+
 ```
-User Input (stdin)
+prompt (str)
     ↓
-tokenization() → Splits input into words, applies lowercase + casefold
+local_filter(prompt)          guardrail/filter.py  — banned.txt word match
+    ↓ (if True / not flagged)
+judge_input(prompt) -> Verdict   guardrail/judge.py — local TF-IDF+LR classifier
+    ↓ (if SAFE)
+call_model(prompt) -> str     guardrail/model.py  — Groq API call
     ↓
-promtVerification() → Checks tokenized words against banned.txt
-    ↓
-    ├─ If banned word found → Return False (FLAGGED)
-    └─ If all words safe → Return True (ALLOWED)
-    ↓ (if True)
-LLMrequest() → Sends **original prompt string** to Groq API
-    ↓
-Extract response via `.choices[0].message.content`
-    ↓
-Display to user
+judge_output(answer) -> Verdict  guardrail/judge.py — local TF-IDF+LR classifier
+    ↓ (if SAFE)
+Result(decision, reason, answer, input_reason, output_reason)
 ```
+
+`guardrail/__init__.py` exposes `process_prompt(prompt: str) -> Result`, which runs all four stages and short-circuits (empty `answer`, `decision="UNSAFE"`) the moment any stage flags.
 
 ---
 
 ## Key Design Decisions
 
-1. **Dual Prompt Storage:** The script maintains TWO versions of user input:
-   - `user_input` (string): Original prompt for the Groq API
-   - `TokenizedPromt` (list): Tokenized words for banned-word checking
-   
-   This separation is critical—Groq's API expects a string in the `content` field, not a list.
+1. **Local classifiers, not an LLM-as-judge.** The original plan (see `ROADMAP.md`) had `judge_input`/`judge_output` call Groq with a strict system prompt. Mid-project this pivoted (see `HANDOFF.md`) to self-owned TF-IDF + Logistic Regression classifiers trained on the `wildguardmix` dataset (`train_classifier.py` → `guardrail/models/*.joblib`), so judging never depends on an external API call. Two pretrained transformers were tried and rejected on real numbers first — see the docstring in `guardrail/judge.py` for why.
 
-2. **Global Variable for State:** `user_input` is declared as a global variable and populated by `tokenization()`. This allows `LLMrequest()` to access it without being a return value.
+2. **Fail-closed thresholds, not the default 0.5 cutoff.** The input classifier only caught 71% of harmful prompts at threshold 0.5, so it runs at `INPUT_UNSAFE_THRESHOLD = 0.30` (guardrail/judge.py) — biasing toward flagging when uncertain, at the cost of some false positives on benign phrasing that resembles adversarial training examples (e.g., "help me write X"). The output classifier keeps the default 0.5 (already recall-heavy in the safe direction).
 
-3. **Early Exit in Loop:** The `promtVerification()` loop returns immediately on the first banned word (returns False) and after confirming all words are safe (returns True outside the loop).
+3. **Pure core, thin shells.** `local_filter`, `judge_input`, `judge_output`, `call_model` all take a string and return a value — never call `input()`/`print()`. `call_model` wraps the Groq call in `try/except` for auth/network/rate-limit errors and returns a failure string instead of raising. This is what lets `safety_guard.py`, the future `cli.py`, and tests all call the identical core.
 
-4. **Environment-Based Secrets:** The Groq API key is loaded from the `.env` file via `dotenv` and `os.getenv()`, never hardcoded.
+4. **Environment-Based Secrets:** the Groq API key loads from `.env` via `dotenv`/`os.getenv()`, never hardcoded.
 
 ---
 
@@ -53,53 +50,69 @@ Display to user
 python safety_guard.py
 ```
 
-The script will prompt for user input. If the input contains no banned words, it sends the prompt to Groq and displays the AI's response.
+Interactive shell: prompts for input, runs it through `local_filter` + `call_model` (not yet the full judge pipeline — see Known Issues).
+
+To retrain the classifiers (needed if `wildguardmix/` or the model choice changes):
+```bash
+python train_classifier.py
+```
 
 ---
 
 ## Files & Responsibilities
 
-- **safety_guard.py**: Main application. Contains tokenization, safety checking, and Groq API integration.
-- **banned.txt**: External list of prohibited words/phrases (one per line). Loaded at runtime.
-- **.env**: Environment variables file (not committed to git). Must contain `GROQ_API_KEY=<your_key>`.
-- **.gitignore**: Excludes `.env` and other sensitive/temporary files.
+- **guardrail/filter.py** — `local_filter(prompt) -> bool`, banned-word check against `banned.txt`.
+- **guardrail/model.py** — `call_model(prompt) -> str`, Groq API call with error handling.
+- **guardrail/judge.py** — `Verdict` dataclass, `judge_input`/`judge_output`, load the trained classifiers from `guardrail/models/`.
+- **guardrail/__init__.py** — `Result` dataclass, `process_prompt(prompt) -> Result` wiring the full pipeline.
+- **guardrail/models/*.joblib** — trained TF-IDF+LR pipelines (input and output classifiers).
+- **train_classifier.py** — one-off training script; run manually, not part of the runtime pipeline.
+- **safety_guard.py** — original interactive script, now a thin shell over `guardrail/`.
+- **banned.txt** — external list of prohibited words/phrases (one per line).
+- **wildguardmix/** — training data (git-ignored, 54MB, gated dataset — see its `README.md` for licensing).
+- **.env** — must contain `GROQ_API_KEY=<your_key>` (git-ignored).
+- **clude/rules.md** — tutor/coaching rules Claude follows in this repo; keep in sync with architecture changes.
 
 ---
 
 ## Dependencies
 
-Install via:
 ```bash
-pip install groq python-dotenv
+pip install groq python-dotenv scikit-learn pandas joblib
 ```
 
-- **groq**: Official Groq Python client for API calls.
-- **python-dotenv**: Loads environment variables from `.env` file.
+- **groq / python-dotenv** — Groq API client + `.env` loading.
+- **scikit-learn** — TF-IDF vectorizer + Logistic Regression for the local classifiers.
+- **pandas** — reads the `wildguardmix` parquet files for training.
+- **joblib** — persists/loads trained classifier pipelines.
 
 ---
 
 ## Phase-by-Phase Status
 
-- **Phase 1 ✓ COMPLETE**: Local safety filter with file I/O and text processing.
-- **Phase 2 ✓ COMPLETE**: Groq AI integration, API authentication, JSON response parsing.
-- **Phase 3 (PLANNED)**: Response filtering—process and validate AI outputs before returning to users.
+- **Phase 1 ✓ COMPLETE** — local banned-word filter (`guardrail/filter.py`).
+- **Phase 2 ✓ COMPLETE** — Groq integration, now a pure `call_model()` with error handling.
+- **Phase 3 (local-classifier direction) ✓ COMPLETE** — `judge_input`/`judge_output` backed by trained TF-IDF+LR classifiers (not Groq calls); full pipeline wired via `process_prompt()`.
+- **Phase 4 (CLI) ✓ COMPLETE** — `cli.py` thin shell over `process_prompt()`, `--explain`/`--no-model` flags, exit codes 0/1.
+- **Phase 5 (Analytics) ✓ COMPLETE** — `guardrail/store.py` (parameterized SQLite logging) + `reports.py` (totals, flag rate, recent flagged prompts).
 
 ---
 
 ## Known Issues & TODO
 
-- `promtVerification()` currently returns on the first word check. Should check **all** words before returning, but logic is adequate for Phase 2.
-- Global `user_input` variable works for single-threaded scripts but should be refactored into function parameters for production code.
-- `.env` file and banned words list must be manually created/updated—no initialization automation yet.
+- `safety_guard.py`'s interactive loop still only calls `local_filter` + `call_model` — it predates the judge pipeline and hasn't been rewired to call `process_prompt()`. `cli.py` (Phase 4) is the intended full-pipeline shell; `safety_guard.py` is legacy and may be retired once `cli.py` exists.
+- Input classifier has a documented false-positive pattern (see `guardrail/judge.py` docstring) — benign prompts phrased like "help me write/explain X" can score UNSAFE. Accepted as an MVP trade-off; revisit if real usage shows it's a problem.
+- `.env` file and `banned.txt` must be manually created/updated — no initialization automation.
+- `wildguardmix/` must be present locally to re-run `train_classifier.py`; it's git-ignored so a fresh clone needs to re-download it (gated dataset, requires accepting AI2's terms).
 
 ---
 
 ## When Modifying This Code
 
-- **Adding features to safety checks**: Extend `promtVerification()` or `tokenization()`.
-- **Changing the AI model**: Update the `model` parameter in `LLMrequest()` (currently `llama-3.3-70b-versatile`).
-- **Integrating Phase 3 response filtering**: Add a new function to process the AI response before printing; call it within or after `LLMrequest()`.
-- **Testing API integration**: Make sure `GROQ_API_KEY` is set in `.env` before running.
+- **Adding/changing safety-check logic**: extend `guardrail/filter.py` (word list) or `guardrail/judge.py` (classifier logic) — never re-add global state or `print()`/`input()` inside `guardrail/`.
+- **Changing the AI model**: update the `model` parameter in `guardrail/model.py::call_model()` (currently `llama-3.3-70b-versatile`) — flag the change, don't swap silently.
+- **Retraining classifiers**: edit `train_classifier.py`, re-run it, and re-evaluate (`classification_report` output) before assuming the new model is better — compare precision/recall, not just "it ran."
+- **Testing API integration**: make sure `GROQ_API_KEY` is set in `.env` before running.
 
 ---
 
@@ -109,6 +122,7 @@ This project is being built incrementally with an educational, hands-on approach
 - Python package management and libraries
 - API authentication and environment variables
 - HTTP client abstractions and JSON response parsing
+- Basic ML: TF-IDF vectorization, Logistic Regression, precision/recall trade-offs, fail-closed threshold tuning
 - Multi-step debugging and problem-solving
 
-Code style follows pragmatic, learning-focused patterns—not enterprise standards. Prioritize clarity for education over performance optimizations.
+Code style follows pragmatic, learning-focused patterns — not enterprise standards. Prioritize clarity for education over performance optimizations. See `clude/rules.md` for the full tutoring contract Claude follows in this repo.
