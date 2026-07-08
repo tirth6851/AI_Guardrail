@@ -50,7 +50,7 @@ Result(decision, reason, answer, input_reason, output_reason)
 python safety_guard.py
 ```
 
-Interactive shell: prompts for input, runs it through `local_filter` + `call_model` (not yet the full judge pipeline — see Known Issues).
+Interactive shell over the full pipeline (rewired to `process_prompt()` in the hardening pass). `cli.py "prompt"` is the argument-based equivalent; add `--no-model` to run the input path offline, `--explain` for the detailed reasons.
 
 To retrain the classifiers (needed if `wildguardmix/` or the model choice changes):
 ```bash
@@ -100,8 +100,9 @@ pip install groq python-dotenv scikit-learn pandas joblib
 
 ## Known Issues & TODO
 
-- `safety_guard.py`'s interactive loop still only calls `local_filter` + `call_model` — it predates the judge pipeline and hasn't been rewired to call `process_prompt()`. `cli.py` (Phase 4) is the intended full-pipeline shell; `safety_guard.py` is legacy and may be retired once `cli.py` exists.
-- Input classifier has a documented false-positive pattern (see `guardrail/judge.py` docstring) — benign prompts phrased like "help me write/explain X" can score UNSAFE. Accepted as an MVP trade-off; revisit if real usage shows it's a problem.
+- **RESOLVED (hardening pass):** the pipe-bomb false-negative (`HANDOFF.md:18`) is fixed by `harmful_terms.txt` (weapons/CBRN word backstop) + `normalize.py` (leet/base64 decoding). The `bullet`-from-`bullet vibe` false-positive is fixed by phrase-aware matching in `filter.py`. `safety_guard.py` is rewired to `process_prompt()` (no longer bypasses the judges). Verified by `python -m pytest` (regression gate in `tests/test_gate.py`).
+- Input classifier still has a documented false-positive pattern (see `guardrail/judge.py` docstring) — benign prompts phrased like "help me write/explain X" can score UNSAFE (e.g. "explain how photosynthesis works" is blocked at threshold 0.30). Measured in `eval/` (macro-F1 0.864, benign-FP ~0.29). Accepted MVP trade-off; the real fix is retraining/threshold-tuning the classifier, tracked as future work.
+- Word backstop has a known idiom cost: bare `bomb` flags "bombed the interview"/"box office bomb". Accepted; tune `harmful_terms.txt` (your domain) if it bites.
 - `.env` file and `banned.txt` must be manually created/updated — no initialization automation.
 - `wildguardmix/` must be present locally to re-run `train_classifier.py`; it's git-ignored so a fresh clone needs to re-download it (gated dataset, requires accepting AI2's terms).
 

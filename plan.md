@@ -65,7 +65,14 @@ Banned Prompt → Rejected with "FLAGGED" message
 
 ---
 
-## Phase 3: Response Validation & Filtering 🔄 PLANNED
+## Phase 3: Response Validation & Filtering ✅ COMPLETE (via local classifiers)
+
+> **Superseded design note:** the step-by-step banned-word/regex plan below was
+> the *original* Phase-3 sketch. It was replaced by self-owned TF-IDF+LR
+> classifiers (`judge_input`/`judge_output`, trained on `wildguardmix`) plus a
+> hardening pass (normalization, weapons backstop, injection heuristics, PII
+> redaction, eval harness). See `CLAUDE.md`, `ROADMAP.md`, and `HANDOFF.md`. The
+> text below is kept as history, not as the current plan.
 
 ### Objectives
 Validate and filter AI responses to ensure they meet safety standards before returning to the user.

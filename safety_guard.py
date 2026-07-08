@@ -1,24 +1,24 @@
 """
-Phase 1 (local filter) and Phase 2 (Groq call) logic now live in the
-guardrail/ package as plain functions (guardrail/filter.py, guardrail/model.py).
-This script is just the original interactive shell, rewired to call them
-instead of duplicating the logic with a global.
+Interactive shell over the FULL guardrail pipeline.
+
+Rewired during the hardening pass: it used to call only local_filter + call_model
+(bypassing the judges — the documented Phase-3 bypass) and printed the raw
+call_model return. It now delegates to guardrail.process_prompt() so it runs the
+same normalize -> filter -> judge -> model -> judge path as cli.py, and shows the
+generic caller-facing message (never the internal reason/score).
 """
-from guardrail.filter import local_filter
-from guardrail.model import call_model
+from guardrail import process_prompt
 
 
 def main():
-  user_input = input("Please input your prompt here:").strip()
-  if not local_filter(user_input):
-    print("FLAGGED: Prompt is illegal")
-    return
-  print("sending it to LLM")
-  print(call_model(user_input))
+    user_input = input("Please input your prompt here: ").strip()
+    result = process_prompt(user_input)
+    print(f"decision: {result.decision}")
+    if result.decision == "SAFE":
+        print(result.answer)
+    else:
+        print(result.public_message)
 
 
 if __name__ == "__main__":
-  main()
-
-
-
+    main()
