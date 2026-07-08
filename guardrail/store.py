@@ -43,6 +43,12 @@ def init_db(path: str = DEFAULT_DB_PATH) -> None:
             )
             """
         )
+        # lightweight migration: a DB created before the hardening pass has no
+        # prompt_hash column, and CREATE TABLE IF NOT EXISTS won't add it. Add it
+        # in place so an existing analytics.db keeps working without data loss.
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(logs)")}
+        if "prompt_hash" not in existing:
+            conn.execute("ALTER TABLE logs ADD COLUMN prompt_hash TEXT")
 
 
 def log_interaction(

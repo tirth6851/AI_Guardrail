@@ -27,7 +27,7 @@ def main():
     print(f"decision: {result.decision}")
     if result.decision == "SAFE":
         # answer is "" under --no-model (model was skipped) — say so explicitly.
-        print(result.answer if result.answer else "(input screened SAFE — no answer; model skipped)")
+        print(result.answer if result.answer else "(input screened SAFE - no answer; model skipped)")
     else:
         # UNSAFE or ERROR: show the generic caller-facing message, not the raw reason.
         print(result.public_message)
