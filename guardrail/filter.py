@@ -14,18 +14,18 @@ in review:
    process happened to be started from the repo root. Paths are now resolved
    relative to this file, so the core works when imported as a library too.
 
-Two lists feed this gate:
-- banned.txt         — the legacy profanity/obscenity list (unchanged content).
-- harmful_terms.txt  — the safety backstop for weapons/CBRN terms the ML
-  classifier misses (see its header + HANDOFF.md for how the terms were chosen).
-Both are optional; a missing file just contributes no entries.
+This gate is for banned.txt — the profanity/obscenity list — where any occurrence
+is disallowed regardless of intent. The weapons/CBRN terms in harmful_terms.txt
+are handled separately by backstop.py, which requires instructional intent (so
+"when was the atomic bomb dropped" is NOT blocked here). Keeping them apart is
+deliberate: profanity is context-free, weapons mentions are not.
 """
 import re
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
-_LIST_FILES = [_REPO_ROOT / "banned.txt", _REPO_ROOT / "harmful_terms.txt"]
+_LIST_FILES = [_REPO_ROOT / "banned.txt"]
 
 
 def _load_entries() -> tuple[set, list]:

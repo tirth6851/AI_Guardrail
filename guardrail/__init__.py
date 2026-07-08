@@ -22,6 +22,7 @@ detection can be measured offline without spending a Groq request.
 """
 from dataclasses import dataclass, field
 
+from guardrail.backstop import backstop_check
 from guardrail.filter import local_filter
 from guardrail.injection import injection_check
 from guardrail.judge import judge_input, judge_output
@@ -59,12 +60,18 @@ def screen_input(prompt: str) -> Result:
     """
     variants = expansions(prompt)  # normalized text + any decoded base64/hex payloads
 
-    # 1. deterministic word/phrase gate, checked against every decoded variant so
-    #    an encoded banned term is caught even if the visible prompt looks clean.
+    # 1. profanity gate + intent-gated weapons backstop, checked against every
+    #    decoded variant so an encoded term is caught even if the visible prompt
+    #    looks clean.
     for variant in variants:
         if not local_filter(variant):
             return Result(
-                "UNSAFE", "flagged by local banned-word/harmful-term filter", "",
+                "UNSAFE", "flagged by local banned-word filter", "",
+                public_message=_MSG_INPUT_BLOCKED, local_filter_passed=False,
+            )
+        if backstop_check(variant).decision == "UNSAFE":
+            return Result(
+                "UNSAFE", "weapons/CBRN backstop: harmful term + instructional intent", "",
                 public_message=_MSG_INPUT_BLOCKED, local_filter_passed=False,
             )
 

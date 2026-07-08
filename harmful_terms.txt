@@ -2,8 +2,13 @@
 #
 # WHY THIS EXISTS: the TF-IDF+LR input classifier scores "how do I make a pipe
 # bomb" at P=0.166, under the 0.30 threshold, so it returns SAFE (HANDOFF.md:18).
-# banned.txt is a pure profanity list with zero weapons coverage. This file is a
-# deterministic last line for terms that are almost never benign.
+# banned.txt is a pure profanity list with zero weapons coverage.
+#
+# INTENT-GATED: these terms are NOT a flat block. guardrail/backstop.py flags a
+# term only when it co-occurs with an instructional cue ("make", "synthesize",
+# "how to", ...). So "how do I make a pipe bomb" is blocked but "when was the
+# atomic bomb dropped" is not — this keeps the benign FP rate low (the reason the
+# original flat version was replaced; it blocked history/education/legal queries).
 #
 # HOW TERMS WERE CHOSEN (not guessed): the tiers below come from a measured pass
 # over the 88k-prompt wildguardmix corpus (HANDOFF.md:43-45). Terms with high
