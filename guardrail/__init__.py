@@ -1,57 +1,129 @@
 """
-process_prompt() is the single entry point every shell (safety_guard.py, the
-future cli.py, tests) should call — it's the "returns a Result object" core
-described in ROADMAP.md, kept even though Phase 3's judges ended up being
-local classifiers instead of Groq calls: shells shouldn't care how a Verdict
-was produced, only that they get one back.
+The guardrail core. Every shell (cli.py, tests, eval, a future API) calls
+process_prompt() or screen_input() and gets a Result back — no shell needs to
+know how a verdict was produced, only that it got one.
+
+This file grew during the hardening pass. What's new vs the M0-M4 version and why:
+
+- normalize/expansions run FIRST so "b0mb" and base64-encoded payloads can't slip
+  past the word-list and the classifier (see normalize.py).
+- an injection heuristic layer catches structural jailbreaks the topic-classifier
+  misses (see injection.py).
+- call_model now returns a typed ModelResult; a model error is its own outcome
+  (decision="ERROR"), never presented to the user as an answer.
+- Result carries a `public_message` (generic, caller-facing) separate from
+  `reason` (detailed, for the log). Returning the raw P(unsafe) to a caller turns
+  the guardrail into an evasion oracle; the score stays in the log only.
+- model output is PII-redacted before it is returned.
+
+screen_input() is the input-only path (normalize -> filter -> injection ->
+judge_input) with NO model call. eval, tests, and cli --no-model use it so input
+detection can be measured offline without spending a Groq request.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from guardrail.filter import local_filter
+from guardrail.injection import injection_check
 from guardrail.judge import judge_input, judge_output
-from guardrail.model import call_model
+from guardrail.model import MODEL_NAME, call_model
+from guardrail.normalize import expansions, normalize
+from guardrail import pii
+
+# Generic, non-informative messages for callers. The detailed "why" (which layer,
+# what score) lives in Result.reason and goes to the log, never to the caller.
+_MSG_INPUT_BLOCKED = "This request was blocked by the input safety check."
+_MSG_OUTPUT_BLOCKED = "The response was blocked by the output safety check."
+_MSG_MODEL_ERROR = "The model could not be reached. Please try again."
+_MSG_OK = "OK"
 
 
 @dataclass
 class Result:
-    decision: str  # "SAFE" or "UNSAFE"
-    reason: str  # reason for the decision that actually applied
-    answer: str  # "" if flagged at any layer
-    local_filter_passed: bool = True  # False if banned.txt flagged it
-    input_decision: str = ""  # judge_input's raw "SAFE"/"UNSAFE", "" if not run
-    output_decision: str = ""  # judge_output's raw "SAFE"/"UNSAFE", "" if not run
-    input_reason: str = ""  # populated once judge_input runs, for --explain
-    output_reason: str = ""  # populated once judge_output runs, for --explain
+    decision: str  # "SAFE", "UNSAFE", or "ERROR" (model unreachable)
+    reason: str  # detailed reason for the log/--explain; NOT for untrusted callers
+    answer: str  # "" if flagged or errored; PII-redacted if present
+    public_message: str = ""  # generic caller-facing message (no scores/details)
+    local_filter_passed: bool = True
+    input_decision: str = ""  # judge_input's raw verdict, "" if not reached
+    output_decision: str = ""  # judge_output's raw verdict, "" if not reached
+    input_reason: str = ""
+    output_reason: str = ""
+    output_pii_redacted: list = field(default_factory=list)  # PII labels scrubbed from the answer
 
 
-# local_filter_passed/input_decision/output_decision are separate from
-# input_reason/output_reason because guardrail/store.py's log schema (M4)
-# needs the raw SAFE/UNSAFE verdicts as their own columns, while cli.py's
-# --explain flag wants the human-readable "why" text — same underlying
-# Verdict, two different consumers of it.
-def process_prompt(prompt: str) -> Result:
-    if not local_filter(prompt):
-        return Result("UNSAFE", "flagged by local banned-word filter", "", local_filter_passed=False)
+def screen_input(prompt: str) -> Result:
+    """
+    Input-only screening: normalize -> filter (over decoded variants too) ->
+    injection heuristics -> classifier. No model call. Returns a Result whose
+    decision is SAFE or UNSAFE for the *input* alone.
+    """
+    variants = expansions(prompt)  # normalized text + any decoded base64/hex payloads
 
-    input_verdict = judge_input(prompt)
-    if input_verdict.decision == "UNSAFE":
+    # 1. deterministic word/phrase gate, checked against every decoded variant so
+    #    an encoded banned term is caught even if the visible prompt looks clean.
+    for variant in variants:
+        if not local_filter(variant):
+            return Result(
+                "UNSAFE", "flagged by local banned-word/harmful-term filter", "",
+                public_message=_MSG_INPUT_BLOCKED, local_filter_passed=False,
+            )
+
+    canonical = variants[0]  # the normalized visible prompt
+
+    # 2. structural jailbreak / injection heuristics.
+    inj = injection_check(canonical)
+    if inj.decision == "UNSAFE":
         return Result(
-            "UNSAFE", input_verdict.reason, "",
-            input_decision=input_verdict.decision, input_reason=input_verdict.reason,
+            "UNSAFE", inj.reason, "",
+            public_message=_MSG_INPUT_BLOCKED,
+            input_decision="UNSAFE", input_reason=inj.reason,
         )
 
-    answer = call_model(prompt)
-
-    output_verdict = judge_output(answer)
-    if output_verdict.decision == "UNSAFE":
+    # 3. ML intent classifier (fail-closed inside judge_input).
+    verdict = judge_input(canonical)
+    if verdict.decision == "UNSAFE":
         return Result(
-            "UNSAFE", output_verdict.reason, "",
-            input_decision=input_verdict.decision, input_reason=input_verdict.reason,
-            output_decision=output_verdict.decision, output_reason=output_verdict.reason,
+            "UNSAFE", verdict.reason, "",
+            public_message=_MSG_INPUT_BLOCKED,
+            input_decision="UNSAFE", input_reason=verdict.reason,
         )
 
     return Result(
-        "SAFE", output_verdict.reason, answer,
-        input_decision=input_verdict.decision, input_reason=input_verdict.reason,
+        "SAFE", verdict.reason, "", public_message=_MSG_OK,
+        input_decision="SAFE", input_reason=verdict.reason,
+    )
+
+
+def process_prompt(prompt: str) -> Result:
+    """Full pipeline: input screening -> model -> output screening. Fail-closed."""
+    screened = screen_input(prompt)
+    if screened.decision == "UNSAFE":
+        return screened
+
+    model = call_model(prompt)
+    if not model.ok:
+        # a model failure is neither SAFE nor UNSAFE — it's an error, and the
+        # error text is NEVER shown as an answer or fed to the output judge.
+        return Result(
+            "ERROR", f"model call failed: {model.text}", "",
+            public_message=_MSG_MODEL_ERROR,
+            input_decision=screened.input_decision, input_reason=screened.input_reason,
+        )
+
+    output_verdict = judge_output(model.text)
+    if output_verdict.decision == "UNSAFE":
+        return Result(
+            "UNSAFE", output_verdict.reason, "",
+            public_message=_MSG_OUTPUT_BLOCKED,
+            input_decision=screened.input_decision, input_reason=screened.input_reason,
+            output_decision=output_verdict.decision, output_reason=output_verdict.reason,
+        )
+
+    # safe answer — redact any PII the model emitted before returning it.
+    clean_answer, pii_labels = pii.redact(model.text)
+    return Result(
+        "SAFE", output_verdict.reason, clean_answer, public_message=_MSG_OK,
+        input_decision=screened.input_decision, input_reason=screened.input_reason,
         output_decision=output_verdict.decision, output_reason=output_verdict.reason,
+        output_pii_redacted=pii_labels,
     )
