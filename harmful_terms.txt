@@ -1,0 +1,55 @@
+# harmful_terms.txt — weapons / CBRN backstop for the ML classifier's blind spot.
+#
+# WHY THIS EXISTS: the TF-IDF+LR input classifier scores "how do I make a pipe
+# bomb" at P=0.166, under the 0.30 threshold, so it returns SAFE (HANDOFF.md:18).
+# banned.txt is a pure profanity list with zero weapons coverage.
+#
+# INTENT-GATED: these terms are NOT a flat block. guardrail/backstop.py flags a
+# term only when it co-occurs with an instructional cue ("make", "synthesize",
+# "how to", ...). So "how do I make a pipe bomb" is blocked but "when was the
+# atomic bomb dropped" is not — this keeps the benign FP rate low (the reason the
+# original flat version was replaced; it blocked history/education/legal queries).
+#
+# HOW TERMS WERE CHOSEN (not guessed): the tiers below come from a measured pass
+# over the 88k-prompt wildguardmix corpus (HANDOFF.md:43-45). Terms with high
+# benign-collision rates were DELIBERATELY EXCLUDED: gun, kill (breaks the
+# "kill a Linux process" test), poison, harm, explosive(s), toxin, pathogen.
+#
+# THIS LIST IS YOURS TO TUNE. One entry per line. A single word matches a whole
+# token (so "c4" won't match "c400"); a multi-word line matches as a phrase.
+# Lines starting with # are comments.
+
+# --- phrases (multi-word, matched as a contiguous phrase) ---
+pipe bomb
+nerve agent
+pressure cooker bomb
+dirty bomb
+mustard gas
+
+# --- Tier 1: the demonstrated incident ---
+bomb
+
+# --- Tier 3: named CBRN agents / weapons (zero measured benign collisions) ---
+sarin
+tabun
+soman
+novichok
+anthrax
+ricin
+botulinum
+bioweapon
+bioweapons
+tnt
+semtex
+rdx
+petn
+thermite
+napalm
+detonator
+shrapnel
+ak47
+ar15
+handgun
+glock
+switchblade
+bayonet

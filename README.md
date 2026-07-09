@@ -30,8 +30,17 @@ Connected the local safety guardrail to the Groq AI API for automated response g
 
 ---
 
-## Phase 3: Enhanced Safety & Response Filtering (PLANNED)
-Future work to process and filter AI responses before returning to users.
+## Phase 3: Safety Judge (input + output) ✓ COMPLETE — local classifiers
+The banned-word filter is backed by self-owned TF-IDF + Logistic Regression
+classifiers (trained on `wildguardmix`) that judge the prompt on the way in and
+the model's answer on the way out. See `CLAUDE.md` for why this replaced the
+original Groq LLM-as-judge design.
+
+## Hardening pass ✓ — detection quality
+Added on top of Phase 3: input normalization (unicode/leetspeak/base64 decode),
+a weapons/CBRN word backstop (`harmful_terms.txt`) for the classifier's blind
+spot, prompt-injection heuristics, PII detection/redaction, a typed model-failure
+path, and an offline eval harness + regression gate (`eval/`, `tests/`).
 
 ---
 
@@ -39,14 +48,21 @@ Future work to process and filter AI responses before returning to users.
 ```
 User Input
     ↓
-Tokenization + Banned Word Check
-    ↓ (if safe)
-Groq API Call (original text)
+normalize (unicode / leetspeak / base64 decode)
     ↓
-Extract AI Response
+local_filter (banned.txt + harmful_terms.txt, phrase-aware)
     ↓
-Return to User
+injection heuristics  →  judge_input (TF-IDF+LR classifier)
+    ↓ (if SAFE)
+Groq API Call
+    ↓
+judge_output (classifier)  →  PII redaction
+    ↓ (if SAFE)
+Return to User  (+ decision logged to analytics.db, PII-redacted)
 ```
+
+Run the input path offline (no Groq spend): `python cli.py "your prompt" --no-model`
+Run the eval harness: `python eval/run.py` · Run the gate: `python -m pytest`
 
 ---
 

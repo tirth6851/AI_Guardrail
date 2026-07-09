@@ -26,8 +26,13 @@ before judge_input, and judge_input runs before judge_output ever sees a
 model answer.
 """
 from dataclasses import dataclass
+from pathlib import Path
 
 import joblib
+
+# resolve model paths relative to this package, not the process's CWD — the old
+# "guardrail/models/..." string only worked when run from the repo root.
+_MODELS_DIR = Path(__file__).resolve().parent / "models"
 
 # P(unsafe) at or above this threshold -> UNSAFE. 0.5 is the "neutral" cutoff;
 # input uses 0.30 because at 0.5 the input classifier only caught 71% of truly
@@ -50,8 +55,8 @@ def _load(path: str):
         return None
 
 
-_input_model = _load("guardrail/models/input_clf.joblib")
-_output_model = _load("guardrail/models/output_clf.joblib")
+_input_model = _load(str(_MODELS_DIR / "input_clf.joblib"))
+_output_model = _load(str(_MODELS_DIR / "output_clf.joblib"))
 
 
 def _classify(model, text: str, threshold: float, label: str) -> Verdict:
