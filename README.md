@@ -42,6 +42,17 @@ a weapons/CBRN word backstop (`harmful_terms.txt`) for the classifier's blind
 spot, prompt-injection heuristics, PII detection/redaction, a typed model-failure
 path, and an offline eval harness + regression gate (`eval/`, `tests/`).
 
+## Classifier improvement pass ✓ — TF-IDF retrain beats a transformer experiment
+The input classifier was retrained with `benign_augment.jsonl` (hand-written
+"explain/write/how do I X" examples targeting its documented false-positive
+pattern) — macro-F1 0.921 → **0.974**, benign false-positive rate 0.143 → **0.048**,
+severe recall unchanged at 1.000. A DistilBERT transformer classifier was also
+trained and evaluated (`train_transformer_classifier.py`) as a candidate
+upgrade; it beat the *old* TF-IDF baseline on aggregate metrics but regressed
+a specific hardened anchor case (`tests/test_gate.py`'s "kill a Linux process"
+case) and was **not integrated** — a measured, documented decision, not an
+oversight. See `HANDOFF.md` for the full comparison.
+
 ---
 
 ## Architecture Overview

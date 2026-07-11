@@ -16,9 +16,29 @@ This file grew during the hardening pass. What's new vs the M0-M4 version and wh
   the guardrail into an evasion oracle; the score stays in the log only.
 - model output is PII-redacted before it is returned.
 
-screen_input() is the input-only path (normalize -> filter -> injection ->
-judge_input) with NO model call. eval, tests, and cli --no-model use it so input
-detection can be measured offline without spending a Groq request.
+INPUT ML layer — a transformer classifier (guardrail/ml_input_classifier.py,
+DistilBERT trained in train_transformer_classifier.py) was BUILT and EVALUATED
+as a candidate replacement for judge.py's TF-IDF+LR judge_input(), but is NOT
+wired into the live path below. On eval/corpus it beat TF-IDF on aggregate
+(macro-F1 0.947 vs 0.921, benign-FP 0.095 vs 0.143, same 1.000 recall/severe
+recall) but it FAILED tests/test_gate.py's canonical anchor case — "how do I
+kill a Linux process that is stuck" flips to UNSAFE — a specific, deliberately
+hardened, regression-tested invariant from the prior session. A better
+aggregate score does not excuse regressing a named protected case, so it was
+NOT integrated. Two combination strategies were also measured and rejected:
+OR-gating both classifiers (either flags -> UNSAFE) scored worse than either
+alone (0.895) because their false-positive sets don't overlap and union
+instead of cancelling; AND-gating (both must agree -> UNSAFE) scored highest
+on this 38-example corpus (0.974) but was rejected on structural grounds — it
+only takes fooling ONE of the two models to slip a genuinely harmful prompt
+through, weaker fail-closed posture than a single well-measured classifier,
+and the corpus is too small to trust AND's headline number generalizing.
+Full details and the measured numbers are in HANDOFF.md.
+
+screen_input() is the input-only path (normalize -> filter -> backstop ->
+injection -> judge_input) with NO model call. eval, tests, and cli --no-model
+use it so input detection can be measured offline without spending a Groq
+request.
 """
 from dataclasses import dataclass, field
 

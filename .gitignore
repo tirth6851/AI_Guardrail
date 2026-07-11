@@ -5,3 +5,4 @@ analytics.db
 __pycache__/
 *.pyc
 .claude/ponytail/
+guardrail/models/input_clf_distilbert*/
