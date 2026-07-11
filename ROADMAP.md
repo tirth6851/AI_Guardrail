@@ -59,7 +59,7 @@ AI Guardrail is a pure-Python **AI safety pipeline**. A user prompt passes throu
 | 2 ✅ | API Bridge | Groq integration (done) | Add error handling + refactor off globals |
 | 3 | Safety Judge (superseded to local classifier — see note above) | `judge_input` (3a) + `judge_output` (3b) | ~~Two judge functions with strict system prompts~~ Two local TF-IDF+LR classifiers |
 | 4 | Production Shift | Package as a **CLI** | `argparse`/`click` shell over the core |
-| 4.5 | (optional) Web API | FastAPI wrapper | Same core, HTTP transport |
+| 4.5 ✅ | Web API | FastAPI wrapper (`api.py`) | Same core, HTTP transport |
 | 5 | Analytics Database | SQLite logging + query script | One `logs` table, one reporting script |
 
 ---
@@ -113,14 +113,16 @@ AI Guardrail is a pure-Python **AI safety pipeline**. A user prompt passes throu
 - **Common mistakes:** leaking business logic into `cli.py`; swallowing errors so the exit code lies; printing debug noise to stdout instead of stderr.
 - **Test:** run the CLI on 3 known prompts; assert exit codes; confirm the core functions are still callable without the CLI.
 
-### Phase 4.5 — Web API (optional, only after CLI is solid)
+### Phase 4.5 — Web API ✅ COMPLETE
 
 - **Goal:** expose the same core over HTTP with FastAPI.
 - **Why it matters:** portfolio value and real-world shape — but *only* worthwhile once the core is transport-independent.
 - **Concepts:** FastAPI basics, request/response models (Pydantic), why you never put logic in the route handler.
-- **Files:** `api.py`, `requirements.txt` update.
-- **Definition of done:** `POST /check {"prompt": "..."}` returns the same `Result` the CLI produces, by calling the identical core function.
-- **Common mistakes:** re-implementing pipeline logic in the route; no input validation; exposing the API key in responses/logs.
+- **Files:** `api.py`, `tests/test_api.py`.
+- **What shipped:** `POST /check {"prompt": "...", "no_model": bool}` calls `screen_input()`/`process_prompt()` directly (identical core the CLI uses) and returns `{request_id, decision, answer, message}`. `GET /health` for liveness. Request IDs are read from `x-request-id` if the caller supplies one, else generated (`uuid4`). Body size capped at `MAX_PROMPT_BYTES = 8192` (413 if exceeded). Every call logs to `analytics.db` via the same `log_interaction()` cli.py uses. Only `public_message`/`answer` cross the HTTP boundary — the detailed `reason`/score never does (same rule as `--explain` being a local-only affordance in `cli.py`).
+- **Also shipped (follow-up pass):** API-key tenant identity (`guardrail/policy.py`), a per-tenant policy object (`TenantPolicy`), rate limiting and repeat-offender escalation (`guardrail/abuse.py`), all wired into `/check` — every request now requires `X-API-Key`, is checked against its tenant's rate limit and offender-escalation state before the model is ever called, and its `tenant_id` is persisted alongside `request_id` in `analytics.db`. Deliberately simple/local-first: no OAuth, no multi-user login, in-memory single-process abuse state, one shared set of default limits (per-tenant limit *overrides* aren't exposed via the env config format yet — see CLAUDE.md).
+- **Common mistakes avoided:** no pipeline logic in the route handler (it's a straight call into `guardrail`); Pydantic validates non-empty prompt (422 on empty); no API key ever appears in a response.
+- **Test:** `tests/test_api.py` — health check, benign SAFE round-trip, UNSAFE round-trip with reason-leak check, oversized-body 413, empty-body 422, request-id echo. Run via FastAPI's `TestClient`, no live server needed.
 
 ### Phase 5 — Analytics Database
 

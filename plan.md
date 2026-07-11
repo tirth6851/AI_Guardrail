@@ -186,8 +186,10 @@ Development is intentionally hands-on and incremental. Focus on:
 |-------|--------|-----------------|
 | Phase 1 | ✅ Complete | Done |
 | Phase 2 | ✅ Complete | Done |
-| Phase 3 | 🔄 Planned | Next |
-| Phase 4+ | ⏸️ On Hold | Future |
+| Phase 3 | ✅ Complete (via local classifiers, see section above) | Done |
+| Phase 4 (CLI) | ✅ Complete | Done |
+| Phase 4.5 (Web API + auth/policy/abuse) | ✅ Complete | Done |
+| Phase 5 (Analytics) | ✅ Complete | Done |
 
 ---
 
