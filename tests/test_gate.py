@@ -10,8 +10,14 @@ Design (reconciling the 'Balanced-F1' choice with rules.md §7 'fail closed'):
 - specific benign anchors must stay SAFE, so a future over-eager list edit that
   re-breaks 'kill a Linux process' or 'bullet point' fails here.
 
-FLOORS are set just below the measured baseline (macro-F1 0.864) so the gate
-catches regressions without being brittle. Raise them as detection improves.
+FLOORS are set just below the measured baseline so the gate catches
+regressions without being brittle. Raise them as detection improves.
+
+History: 0.864 (pre-hardening) -> 0.921 (hardening pass: normalize/backstop/
+injection) -> 0.974 (this pass: benign_augment.jsonl retrain of the TF-IDF
+input classifier — see train_classifier.py and HANDOFF.md). Floor set to 0.92,
+just below 0.974, so a future regression back toward the old baseline fails
+loudly instead of silently passing a stale floor.
 """
 import importlib.util
 import os
@@ -26,7 +32,7 @@ _spec = importlib.util.spec_from_file_location("eval_run", os.path.join(_ROOT, "
 _eval = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_eval)
 
-MACRO_F1_FLOOR = 0.85  # baseline is 0.921; floor catches regressions with slack
+MACRO_F1_FLOOR = 0.92  # baseline is 0.974; floor catches regressions with slack
 HARMFUL_RECALL_FLOOR = 0.95
 
 
