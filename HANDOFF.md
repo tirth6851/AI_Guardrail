@@ -1,6 +1,107 @@
 # Session Handoff — AI Guardrail
 
-## Session date & status
+## Session date & status (latest)
+
+**2026-07-11 (fourth session — cleanup/ship-readiness pass)** · Goal: no new features, finish repo cleanup/packaging/docs so a fresh clone is runnable and the docs match code exactly. Baseline reconfirmed before touching anything: 48 tests passing, eval macro-F1 0.974 (unchanged from session 3).
+
+**Shipped this pass:**
+- `requirements.txt` (new) — pins the 9 runtime/test packages actually verified in this environment (`groq`, `python-dotenv`, `scikit-learn`, `pandas`, `joblib`, `fastapi`, `uvicorn`, `pytest`, `httpx`); `torch`/`transformers` (the rejected transformer research path) listed commented-out, not installed by default. Verified with `pip install -r requirements.txt --dry-run` — resolves cleanly, every requirement already satisfied by the versions actually in use.
+- `README.md` — fully rewritten; the previous version was a Phase-1/2-era doc with no mention of `api.py`, auth, policy, abuse controls, or even `cli.py`'s flags. New version has: Quickstart, Architecture (with an explicit "live TF-IDF vs. rejected-transformer vs. API/auth/policy/abuse-control status" breakdown), CLI/API/test/eval run instructions, an example `curl` request, an env-var reference table (documents `GROQ_API_KEY`/`GUARDRAIL_HASH_SALT`/`GUARDRAIL_API_KEYS` — did not touch `.env` itself per instruction), and a Known Limitations section matching CLAUDE.md's.
+- `plan.md` — fixed the milestone table's stale "Phase 3: Planned" row (flagged as a known, unfixed contradiction in two prior sessions' HANDOFF.md entries, since it directly contradicted the same file's own "Phase 3 COMPLETE" section header) and added Phase 4/4.5/5 rows so the table matches actual repo state.
+- `CLAUDE.md` — Known Issues: logged both fixes above as RESOLVED (cleanup pass).
+
+**Tests/evals run:**
+- `python -m pytest -q` → **48 passed**, unchanged from session 3 — this pass touched no code under test, only docs and a new requirements manifest.
+- `python eval/run.py` → unchanged: macro-F1 0.974, severe recall 1.000, harmful recall 1.000, benign-FP 0.048.
+- `pip install -r requirements.txt --dry-run` → all 9 direct + transitive deps already satisfied, no version conflicts.
+
+**Remaining known limitations (all pre-existing, all documented in README.md/CLAUDE.md, none newly introduced):**
+- No per-tenant policy overrides (`GUARDRAIL_API_KEYS` format is `key:tenant_id` only).
+- Abuse-control state is in-memory/single-process — not safe for `uvicorn --workers > 1`.
+- No dependency lockfile (versions are pinned as minimums in `requirements.txt`, not exact/hashed).
+- One accepted false positive ("the movie was a total bomb at the box office" idiom).
+- Transformer classifier remains research-only, not wired in.
+- Tool/RAG readiness is undocumented-as-a-boundary beyond the note now in README.md's Known Limitations (no implementation was requested this pass — flagged as the one item from the original execution prompt's roadmap that's genuinely still open, and it's explicitly a documentation ask, not a code one).
+- Nothing across any of the four sessions on this branch is committed yet (branch `guardrail-pipeline-local-classifier`, last real commit `c4f8b7e`).
+
+**Final status: project is complete enough to ship as a local-first, single-tenant-simple-multi-tenant safety-gateway service.** Core pipeline, eval harness, regression gate, CLI, HTTP API, API-key auth, per-tenant rate limiting/offender escalation, PII redaction, analytics logging, dependency manifest, and documentation are all implemented, tested, and consistent with each other. What's *not* shipped (OAuth, per-tenant policy overrides, distributed abuse-control state, tool/RAG trust-boundary code) is each a deliberate, documented scope boundary rather than an oversight — see Known Limitations in README.md/CLAUDE.md for the exact list and what each would take to add. The one outstanding process item is that nothing is committed to git yet; that's a decision for the user, not something to do unprompted.
+
+**Continuation prompt for next session:**
+> Continue AI Guardrail work. Read HANDOFF.md's latest session section first (cleanup/ship-readiness pass complete: requirements.txt added, README.md rewritten, plan.md's stale Phase 3 status fixed, 48 tests passing, eval macro-F1 0.974 unchanged). Nothing on this branch is committed yet — if the user wants to commit/PR the accumulated work across all four sessions, that's the natural next action, otherwise ask what's next: per-tenant policy overrides, tool/RAG trust-boundary implementation, or something new. Do not add features speculatively; this project has a documented, deliberate scope boundary — respect it unless explicitly asked to extend it.
+
+---
+
+## Session date & status (third session)
+
+**2026-07-11 (third session)** · Product decision received: simple API-key tenant identity (no OAuth, no multi-user login), policy/rate-limiting/offender-tracking all keyed by API key/tenant, local-first and simple. This unblocks the items the prior session flagged as gated on a product decision.
+
+**Shipped this pass:**
+- `guardrail/store.py` — added `request_id`/`tenant_id` columns (in-place `ALTER TABLE` migration, same pattern as `prompt_hash`) and threaded both through `log_interaction()`'s signature (default `""` for non-HTTP callers like `cli.py`, so its call site is unaffected).
+- `guardrail/policy.py` (new) — `TenantPolicy` dataclass (`tenant_id`, `enabled`, `rate_limit_per_minute`, `offender_threshold`, `offender_window_seconds`) + `get_tenant(api_key)`. Keys configured via `GUARDRAIL_API_KEYS="key1:tenant-a,key2:tenant-b"`; falls back to one local-dev key (`DEFAULT_DEV_KEY`/`DEFAULT_DEV_TENANT`) if unset, so the API keeps running out of the box. Re-parses the env var per call rather than caching — cheap (short string), and it means tests can flip `GUARDRAIL_API_KEYS` per-case with `monkeypatch.setenv` with no cache-invalidation hook needed.
+- `guardrail/abuse.py` (new) — in-memory, single-process `RateLimiter` (sliding 60s window, `allow(tenant_id, limit_per_minute)`) and `OffenderTracker` (`record_unsafe(tenant_id)` / `is_escalated(tenant_id, threshold, window_seconds)`), both keyed by `tenant_id` not the raw API key (so a tenant's state survives key rotation). Deliberately not distributed — documented as the seam to swap for Redis if that ever becomes a real requirement, not a reason to add it now.
+- `api.py` — added `require_tenant()` FastAPI dependency reading `X-API-Key` (401 if missing/invalid/disabled); `/check` now checks offender escalation (403) then rate limit (429) *before* calling the model, records an offender event when a result comes back UNSAFE, and passes `request_id`/`tenant_id` into `log_interaction()`. `/health` stays unauthenticated (liveness-probe convention).
+- `tests/conftest.py` (new) — autouse fixture resetting `guardrail.abuse`'s module-level `rate_limiter`/`offender_tracker` singletons between tests, so one test's hits can't leak into the next.
+- `tests/test_policy.py` (new, 4 tests) — dev-key fallback resolves when `GUARDRAIL_API_KEYS` unset; unknown/empty key → `None`; configured keys map to distinct tenants and suppress the dev fallback.
+- `tests/test_abuse.py` (new, 6 tests) — rate limiter allows-up-to-limit and blocks past it, is per-tenant, and expires its window (via `monkeypatch.setattr(abuse, "_now", ...)` on a fake clock rather than real `time.sleep`); same three shapes for the offender tracker.
+- `tests/test_api.py` (rewritten, 11 tests) — added: missing/invalid API key → 401 (2 tests), rate-limit-exceeded → 429 (saturates the tenant's bucket via the same `rate_limiter` singleton `api.py` uses, then confirms the next real HTTP call is rejected), offender-escalation → 403 (records 5 synthetic UNSAFE events for the dev tenant, then confirms the next call is blocked), and a `request_id`/`tenant_id`-persisted-to-`analytics.db` round-trip test. All prior tests updated to send `X-API-Key: dev-local-key` (via an `AUTH` header constant) since auth is now required. Module calls `guardrail.store.init_db()` at import time so `TestClient(app)` requests (which don't reliably trigger FastAPI's `lifespan` startup hook outside a `with` block) still hit a migrated `analytics.db`.
+- `CLAUDE.md` / `ROADMAP.md` — documented the new files, the Phase 4.5 section's "also shipped" note, and what's still deliberately not built (OAuth, multi-user login, per-tenant limit overrides beyond the shared defaults, distributed abuse state).
+
+**Tests/evals run:**
+- `python -m pytest -q` → **48 passed** (33 from the prior pass + 4 policy + 6 abuse + 5 net-new API tests, after also updating existing API tests for the new auth requirement).
+- `python eval/run.py` → unchanged: macro-F1 0.974, severe recall 1.000, harmful recall 1.000, benign-FP 0.048 — confirms none of this pass touched core safety logic (auth/policy/rate-limiting sit entirely in `api.py`'s route handler, never inside `guardrail/judge.py`, `filter.py`, `backstop.py`, etc.).
+
+**Known simplifications (in scope, matches "keep this simple" instruction):**
+- Every tenant currently gets the *same* default `TenantPolicy` values (`rate_limit_per_minute=60`, `offender_threshold=5`, `offender_window_seconds=3600`) — the `GUARDRAIL_API_KEYS` env format only maps `key:tenant_id`, not per-tenant overrides. If per-tenant *different* limits are wanted later, extend the env format (e.g. `key:tenant_id:limit`) or move config to a small JSON/YAML file — flagging as the natural next step if it's asked for, not building it speculatively now.
+- Abuse-control state is in-memory and per-process (documented in `guardrail/abuse.py`'s docstring) — restarting the API resets rate limits and offender counts. Fine for local-first single-process use; would need a shared store (Redis, SQLite table) for multi-process/distributed deployment.
+- `judge_input`/`judge_output`'s fixed thresholds (`INPUT_UNSAFE_THRESHOLD`/`OUTPUT_UNSAFE_THRESHOLD` in `judge.py`) are still global, not per-tenant — `TenantPolicy` doesn't carry a threshold override yet since nothing asked for per-tenant safety-strictness tuning this pass, and doing so without a measured eval justifying it would violate the "don't change core safety behavior without eval evidence" rule.
+
+**Open risks:**
+- No `requirements.txt`/`pyproject.toml` exists anywhere in the repo (pre-existing gap, not introduced this or the prior session) — `fastapi`/`uvicorn`/`httpx` are installed in this environment but unpinned.
+- Nothing across any of the three sessions on this branch is committed yet — working tree keeps growing uncommitted on `guardrail-pipeline-local-classifier` (last real commit `c4f8b7e`).
+- `api.py`'s in-process abuse-control singletons mean running multiple uvicorn workers would give each worker its own independent rate-limit/offender state (silently *weaker* limits in aggregate) — worth flagging before this is ever deployed with `--workers > 1`.
+
+**Exact next step:** if/when multi-tenant *different* limits are actually wanted, extend `GUARDRAIL_API_KEYS`'s format (or move to a config file) and add tests proving two tenants can have different `rate_limit_per_minute`/`offender_threshold`. Otherwise, next open item per CLAUDE.md's remaining roadmap areas is tool/RAG-readiness documentation (design-only, no implementation asked for).
+
+**Continuation prompt for next session:**
+> Continue AI Guardrail work. Read HANDOFF.md's latest session section first (API-key tenant identity + policy/rate-limiting/offender-tracking shipped, 48 tests passing, eval unchanged at macro-F1 0.974). If per-tenant *different* rate limits/thresholds are wanted, extend `guardrail/policy.py`'s `GUARDRAIL_API_KEYS` env format (or move to a small config file) with tests proving two tenants get different limits — don't build this speculatively without that ask. Otherwise the next open roadmap item is tool/RAG-readiness: document trust boundaries for future tool-call/RAG outputs (design-only per the execution prompt, not an implementation task unless asked). Run `python -m pytest` and `python eval/run.py` before and after any change; never regress `tests/test_gate.py`'s anchor cases or the macro-F1 floor, and don't touch `guardrail/judge.py`'s thresholds without a measured eval justifying it.
+
+---
+
+## Session date & status (second session)
+
+**2026-07-11 (later session)** · Goal: execute the remaining open roadmap items (gateway/API, auth, policy, PII, abuse controls, observability, tool/RAG readiness) per the durable execution prompt. Grounded first — full pipeline was already solid (27 tests, eval macro-F1 0.974, all matching HANDOFF's prior numbers). Cross-checked ROADMAP.md/plan.md against actual code: the **only** genuinely open, unambiguous item was **Phase 4.5 (Web API)** — every other "remaining roadmap area" in the execution prompt (auth, policy, PII redaction, rate limiting, observability) either already exists in some form (PII redaction is real and wired; observability/logging exists via `store.py`) or is a net-new product surface with no existing partial implementation to "finish" — those need a product decision, not more grinding, so this pass shipped the one clearly-scoped, code-confirmed-absent item end to end.
+
+**Shipped this pass:**
+- `api.py` (new) — thin FastAPI shell over the existing `guardrail` core. `POST /check {"prompt", "no_model"}` calls `screen_input()`/`process_prompt()` directly (same functions `cli.py` calls) and returns `{request_id, decision, answer, message}`; `GET /health`. Request ID read from `x-request-id` header or generated via `uuid4()`. Body capped at `MAX_PROMPT_BYTES = 8192` → 413 if exceeded. Logs every call via the same `guardrail/store.py::log_interaction()` cli.py uses (redacted/hashed, no raw PII, no SQL string-formatting). Only `public_message`/`answer` cross the HTTP boundary — the detailed `reason` (which has scores) never does, matching the existing rule that `--explain` in `cli.py` is a local-only affordance. Uses FastAPI's `lifespan` context manager (not the deprecated `@app.on_event("startup")`) to call `init_db()`.
+- `tests/test_api.py` (new) — 6 tests via FastAPI's `TestClient` (no live server/port needed): health check, benign SAFE round-trip (`no_model=True` so no Groq spend), UNSAFE round-trip asserting the raw reason/score never leaks into `message`, oversized-body → 413, empty-body → 422 (Pydantic `min_length=1`), request-id echo.
+- `ROADMAP.md` — Phase 4.5 row and section flipped from "(optional)"/unbuilt to ✅ COMPLETE, with what shipped and what's deliberately not done yet (auth, per-tenant policy, rate limiting) noted inline.
+- `CLAUDE.md` — added `api.py` to Files & Responsibilities, added Phase 4.5 to Phase-by-Phase Status, added `fastapi`/`uvicorn`/`httpx` to the dependency list (all three were already installed in the environment, just undeclared).
+
+**Tests/evals run:**
+- `python -m pytest -q` → **33 passed** (27 pre-existing + 6 new `test_api.py`), no warnings.
+- `python eval/run.py` → unchanged: macro-F1 0.974, severe recall 1.000, harmful recall 1.000, benign-FP 0.048 (1 known FP, the "movie was a total bomb" idiom, pre-existing and documented). Confirms the API layer is pure transport — no core logic touched, no eval regression possible by construction.
+
+**Not done, and why (each needs a product decision, not a bigger diff):**
+- **Auth/tenant identity** — no code exists to build on. Needs a decision: API-key table? JWT? Which identity provider? Shipping a guessed auth scheme risks being wrong for the actual deployment target and is genuinely new surface, not a "finish the partial thing."
+- **Policy layer (per-tenant thresholds/enabled stages/PII mode/rate limits)** — same issue: there's no existing `TenantPolicy` object or config schema to extend; inventing one now, before there's a tenant concept (no auth), would be designing ahead of the requirement it serves.
+- **PII redaction** — already exists and is wired (`guardrail/pii.py`, called from both `process_prompt()` and `store.py`). Nothing left here unless a new PII pattern is reported.
+- **Rate limiting / repeat-offender tracking** — no existing code; also depends on having a caller identity (tenant/API key) to rate-limit *by*, which doesn't exist yet. Blocked on the auth decision above.
+- **Observability/audit — partially exists** (`store.py` logs decision/verdicts/model per request with a request could now carry the new `request_id` from `api.py`, but `log_interaction()` doesn't yet accept/store it — flagged as the smallest next concrete slice, see below).
+- **Tool/RAG readiness** — design-only ask per the prompt ("do not overbuild... document trust boundaries"); not attempted this pass since it's a documentation exercise, not implementation, and the pass prioritized shipping the one concrete, testable roadmap item over writing a design doc no one asked to read yet.
+
+**Open risks:**
+- `api.py`'s `request_id` is generated/echoed but **not persisted** — `log_interaction()` has no `request_id` column, so a caller can't correlate an HTTP response to its analytics.db row yet. Smallest correct next step: add a `request_id TEXT` column to `store.py`'s schema (with the same in-place `ALTER TABLE` migration pattern already used for `prompt_hash`) and thread it through `log_interaction()`'s signature and `api.py`'s call site.
+- Nothing from this pass or the prior session is committed — working tree still has the same uncommitted state as before (see prior session note below) plus `api.py`, `tests/test_api.py`, and doc edits, all uncommitted, still on branch `guardrail-pipeline-local-classifier`.
+- `fastapi`/`uvicorn`/`httpx` are installed in this environment but not pinned anywhere (no `requirements.txt` exists in the repo at all — pre-existing gap, not introduced this session).
+
+**Exact next step:** add `request_id` to `store.py`'s `logs` table + `log_interaction()` signature, wire it from `api.py`, add a test asserting the logged row's `request_id` matches the response's. Then decide (with the user) whether auth/tenant-identity is actually in scope before building policy/rate-limiting on top of it — those are blocked on that product decision, not on more implementation effort.
+
+**Continuation prompt for next session:**
+> Continue AI Guardrail hardening. Read HANDOFF.md's latest session section first. Add `request_id` persistence to `guardrail/store.py` (schema + `log_interaction()` + migration for existing `analytics.db`, same pattern as the `prompt_hash` migration) and wire it from `api.py`; add a test proving the logged row's `request_id` matches the HTTP response. Then ask whether auth/tenant-identity is in scope before building the policy layer or rate limiting, since both are blocked on having a caller identity to key off of. Run `python -m pytest` and `python eval/run.py` before and after; do not regress `tests/test_gate.py`'s anchor cases or the macro-F1 floor.
+
+---
+
+## Session date & status (prior session)
 
 **2026-07-11** · Phase 3/4/5 (transformer classifier experiment + TF-IDF improvement pass) **complete, uncommitted**. Repo is green (27 tests pass, eval macro-F1 0.974) but nothing from this session is committed yet — 9 modified files + 6 new files sit in the working tree on branch `guardrail-pipeline-local-classifier` (last commit `c4f8b7e`, pre-dates this session).
 

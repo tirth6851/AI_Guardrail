@@ -1,0 +1,19 @@
+# Runtime pipeline (guardrail/, cli.py, api.py, reports.py)
+groq>=1.5.0
+python-dotenv>=1.1.0
+scikit-learn>=1.9.0
+pandas>=2.2.3
+joblib>=1.5.3
+fastapi>=0.115.12
+uvicorn>=0.34.2
+
+# Test suite (tests/) — httpx is required by FastAPI's TestClient
+pytest>=8.3.5
+httpx>=0.28.1
+
+# Not required at runtime — only if re-running the rejected transformer
+# experiment (train_transformer_classifier.py, guardrail/ml_input_classifier.py,
+# eval/run_transformer_eval.py, eval/run_combined_eval.py). Not installed by
+# default; see CLAUDE.md for why this path is not part of the live pipeline.
+# torch
+# transformers

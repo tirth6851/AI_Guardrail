@@ -10,6 +10,12 @@ audit database itself a PII store (trust boundary TB5). Now:
   repeat/abuse detection can still group identical prompts without storing their
   content. Set GUARDRAIL_HASH_SALT in the environment; the default is a clearly
   non-secret placeholder so a misconfig is obvious.
+
+CHANGE (API-key/tenant pass): `request_id` and `tenant_id` columns let a
+logged row be correlated back to an api.py HTTP response and to the caller's
+API key's tenant. Both default to "" for non-HTTP callers (cli.py). Same
+in-place ALTER TABLE migration pattern as prompt_hash so an existing
+analytics.db keeps working.
 """
 import hashlib
 import os
@@ -39,16 +45,20 @@ def init_db(path: str = DEFAULT_DB_PATH) -> None:
                 input_verdict TEXT,
                 output_verdict TEXT,
                 final_decision TEXT,
-                model_used TEXT
+                model_used TEXT,
+                request_id TEXT,         -- api.py's per-request ID, "" for non-HTTP callers
+                tenant_id TEXT           -- resolved from the caller's API key, "" if none
             )
             """
         )
-        # lightweight migration: a DB created before the hardening pass has no
-        # prompt_hash column, and CREATE TABLE IF NOT EXISTS won't add it. Add it
-        # in place so an existing analytics.db keeps working without data loss.
+        # lightweight migration: a DB created before a given column existed has
+        # no such column, and CREATE TABLE IF NOT EXISTS won't add it. Add each
+        # missing column in place so an existing analytics.db keeps working
+        # without data loss.
         existing = {row[1] for row in conn.execute("PRAGMA table_info(logs)")}
-        if "prompt_hash" not in existing:
-            conn.execute("ALTER TABLE logs ADD COLUMN prompt_hash TEXT")
+        for column in ("prompt_hash", "request_id", "tenant_id"):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE logs ADD COLUMN {column} TEXT")
 
 
 def log_interaction(
@@ -58,6 +68,8 @@ def log_interaction(
     output_verdict: str,
     final_decision: str,
     model_used: str,
+    request_id: str = "",
+    tenant_id: str = "",
     path: str = DEFAULT_DB_PATH,
 ) -> None:
     # redact before storing; hash the original for dedup. every value is still a
@@ -69,8 +81,9 @@ def log_interaction(
             """
             INSERT INTO logs (
                 timestamp, prompt, prompt_hash, local_filter_result,
-                input_verdict, output_verdict, final_decision, model_used
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                input_verdict, output_verdict, final_decision, model_used,
+                request_id, tenant_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now(timezone.utc).isoformat(),
@@ -81,5 +94,7 @@ def log_interaction(
                 output_verdict,
                 final_decision,
                 model_used,
+                request_id,
+                tenant_id,
             ),
         )
