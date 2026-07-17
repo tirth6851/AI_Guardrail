@@ -1,3 +1,18 @@
+# --- weapons/explosives phrases: flat, non-intent-gated backstop (defense in
+# depth alongside harmful_terms.txt's intent-gated backstop.py). Deliberately
+# narrow MULTI-WORD phrases only, chosen to avoid the benign-FP blowup a flat
+# single-word list caused when tried earlier (see harmful_terms.txt/backstop.py
+# history) — "pipe bomb" never collides with ordinary text the way "bomb" alone
+# does ("the movie was a total bomb").
+pipe bomb
+make a bomb
+build a bomb
+build a pipe bomb
+make a pipe bomb
+homemade bomb
+make an explosive device
+build an explosive device
+
 2g1c
 acrotomophilia
 anal
