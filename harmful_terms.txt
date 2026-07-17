@@ -25,6 +25,11 @@ nerve agent
 pressure cooker bomb
 dirty bomb
 mustard gas
+molotov cocktail
+improvised explosive device
+chlorine gas
+sulfur mustard
+vx nerve agent
 
 # --- Tier 1: the demonstrated incident ---
 bomb
@@ -53,3 +58,5 @@ handgun
 glock
 switchblade
 bayonet
+fentanyl
+molotov

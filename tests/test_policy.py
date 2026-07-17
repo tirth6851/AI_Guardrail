@@ -27,3 +27,25 @@ def test_configured_keys_map_to_distinct_tenants(monkeypatch):
     assert b.tenant_id == "tenant-b"
     # configuring explicit keys should not also expose the dev fallback
     assert get_tenant(DEFAULT_DEV_KEY) is None
+
+
+def test_per_tenant_overrides_applied(monkeypatch):
+    monkeypatch.setenv("GUARDRAIL_API_KEYS", "key-a:tenant-a:120:10:1800,key-b:tenant-b")
+    a = get_tenant("key-a")
+    b = get_tenant("key-b")
+    assert (a.rate_limit_per_minute, a.offender_threshold, a.offender_window_seconds) == (120, 10, 1800)
+    # tenant-b specified no overrides -> class defaults
+    assert (b.rate_limit_per_minute, b.offender_threshold, b.offender_window_seconds) == (60, 5, 3600)
+
+
+def test_blank_override_field_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("GUARDRAIL_API_KEYS", "key-a:tenant-a::10")
+    a = get_tenant("key-a")
+    assert a.rate_limit_per_minute == 60  # blank -> default
+    assert a.offender_threshold == 10  # explicit override
+
+
+def test_malformed_override_field_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("GUARDRAIL_API_KEYS", "key-a:tenant-a:not-a-number")
+    a = get_tenant("key-a")
+    assert a.rate_limit_per_minute == 60
