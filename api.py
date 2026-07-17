@@ -23,6 +23,7 @@ from guardrail import process_prompt, screen_input
 from guardrail.abuse import offender_tracker, rate_limiter
 from guardrail.model import MODEL_NAME
 from guardrail.policy import TenantPolicy, get_tenant
+from guardrail.session import sessions, process_turn
 from guardrail.store import init_db, log_interaction
 
 MAX_PROMPT_BYTES = 8192
@@ -99,4 +100,73 @@ def check(req: CheckRequest, request: Request, tenant: TenantPolicy = Depends(re
         decision=result.decision,
         answer=result.answer,
         message=result.public_message,
+    )
+
+
+class ChatRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    prompt: str = Field(..., min_length=1)
+    no_model: bool = False
+
+
+class ChatResponse(BaseModel):
+    request_id: str
+    session_id: str
+    decision: str
+    answer: str
+    message: str
+    locked: bool
+
+
+@app.post("/chat/session")
+def create_session():
+    """Create a new chat session id. A client-generated UUID also works fine
+    with /chat/message — this endpoint is a convenience, not a requirement."""
+    return {"session_id": str(uuid.uuid4())}
+
+
+@app.post("/chat/message", response_model=ChatResponse)
+def chat_message(req: ChatRequest, request: Request, tenant: TenantPolicy = Depends(require_tenant)):
+    """
+    Session-scoped multi-turn variant of /check. Each call is still screened
+    independently by the same core pipeline, PLUS guardrail.session's
+    cross-turn manipulation checks and per-session lockout — see
+    guardrail/session.py's docstring for why a session only ever gets
+    stricter, never more lenient, as it grows.
+    """
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+
+    if len(req.prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+        raise HTTPException(status_code=413, detail="prompt exceeds max size")
+
+    if offender_tracker.is_escalated(tenant.tenant_id, tenant.offender_threshold, tenant.offender_window_seconds):
+        raise HTTPException(status_code=403, detail="blocked: repeated policy violations")
+
+    if not rate_limiter.allow(tenant.tenant_id, tenant.rate_limit_per_minute):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    result = process_turn(req.session_id, req.prompt, no_model=req.no_model)
+    session = sessions.get_or_create(req.session_id)
+
+    if result.decision == "UNSAFE":
+        offender_tracker.record_unsafe(tenant.tenant_id)
+
+    log_interaction(
+        prompt=req.prompt,
+        local_result="PASS" if result.local_filter_passed else "FLAGGED",
+        input_verdict=result.input_decision,
+        output_verdict=result.output_decision,
+        final_decision=result.decision,
+        model_used=MODEL_NAME if result.answer else "",
+        request_id=request_id,
+        tenant_id=tenant.tenant_id,
+    )
+
+    return ChatResponse(
+        request_id=request_id,
+        session_id=req.session_id,
+        decision=result.decision,
+        answer=result.answer,
+        message=result.public_message,
+        locked=session.locked,
     )
