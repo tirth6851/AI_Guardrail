@@ -30,7 +30,27 @@ Two enforcement layers, both fail-closed:
 Deliberately in-memory / single-process, same as guardrail/abuse.py — this
 project is local-first (see CLAUDE.md); the seam to swap for a shared store
 is the same one abuse.py already documents, not a reason to add it now.
+
+TTL / EVICTION: SessionStore keeps every session it's ever seen unless
+something evicts it, which is an unbounded-memory-growth risk for a
+long-running api.py process. SESSION_TTL_SECONDS bounds this — a session
+untouched for that long is treated as gone (a fresh ChatSession is created
+on its next use, same as if it never existed; this deliberately does NOT
+preserve flagged_count/locked state past the TTL). This is memory hygiene,
+not a security boundary: session_id is client-supplied (api.py's
+ChatRequest.session_id has no server-side identity check), so an attacker
+can already get a "fresh" session at any time simply by sending a new id —
+TTL eviction hands them nothing they couldn't already get for free. The
+per-turn lockout in this module is therefore a soft, UX-level safeguard
+against a *sustained* attempt on one session id, not a hard per-attacker
+gate; the actual identity-keyed enforcement is guardrail/abuse.py's
+tenant-scoped OffenderTracker (keyed by API key -> tenant_id, which a client
+can't freely mint), and that tracker already has its own, independent
+expiry window. Eviction here is lazy — swept on each get_or_create() call
+rather than a background thread, so this stays a plain synchronous module
+with no lifecycle to manage.
 """
+import time
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -39,8 +59,13 @@ from guardrail.manipulation import manipulation_check
 
 SESSION_LOCK_THRESHOLD = 3  # flagged turns in a session before it's locked out entirely
 MAX_HISTORY_TURNS = 6  # how many recent prompts are joined for cross-turn manipulation checks
+SESSION_TTL_SECONDS = 3600  # a session idle this long is evicted (memory hygiene, not a security boundary)
 
 _MSG_SESSION_LOCKED = "This session has been locked after repeated policy violations. Start a new session."
+
+
+def _now() -> float:
+    return time.monotonic()
 
 
 @dataclass
@@ -50,16 +75,36 @@ class ChatSession:
     flagged_count: int = 0
     locked: bool = False
     history: deque = field(default_factory=lambda: deque(maxlen=MAX_HISTORY_TURNS))
+    last_seen: float = field(default_factory=_now)
 
 
 class SessionStore:
     def __init__(self):
         self._sessions: dict[str, ChatSession] = {}
 
+    def _evict_expired(self) -> None:
+        # api.py's /chat/message is a sync def, so FastAPI runs it in the
+        # anyio threadpool -- concurrent requests can call this on separate
+        # threads even under a single uvicorn worker. dict.pop(sid, None) is
+        # idempotent, so a session already evicted by another thread doesn't
+        # raise KeyError here (plain `del` would).
+        cutoff = _now() - SESSION_TTL_SECONDS
+        expired = [sid for sid, s in self._sessions.items() if s.last_seen < cutoff]
+        for sid in expired:
+            self._sessions.pop(sid, None)
+
     def get_or_create(self, session_id: str) -> ChatSession:
+        self._evict_expired()
         if session_id not in self._sessions:
             self._sessions[session_id] = ChatSession(session_id=session_id)
-        return self._sessions[session_id]
+        session = self._sessions[session_id]
+        session.last_seen = _now()
+        return session
+
+    def active_count(self) -> int:
+        """Number of non-expired sessions currently held (evicts first)."""
+        self._evict_expired()
+        return len(self._sessions)
 
     def reset(self) -> None:
         self._sessions.clear()
