@@ -74,8 +74,8 @@ class Result:
 
 def screen_input(prompt: str) -> Result:
     """
-    Input-only screening: normalize -> filter (over decoded variants too) ->
-    injection heuristics -> classifier. No model call. Returns a Result whose
+    Input-only screening: normalize -> filter + backstop and injection
+    heuristics (both over decoded variants too) -> classifier. No model call. Returns a Result whose
     decision is SAFE or UNSAFE for the *input* alone.
     """
     variants = expansions(prompt)  # normalized text + any decoded base64/hex payloads
@@ -97,16 +97,20 @@ def screen_input(prompt: str) -> Result:
 
     canonical = variants[0]  # the normalized visible prompt
 
-    # 2. structural jailbreak / injection heuristics.
-    inj = injection_check(canonical)
-    if inj.decision == "UNSAFE":
-        return Result(
-            "UNSAFE", inj.reason, "",
-            public_message=_MSG_INPUT_BLOCKED,
-            input_decision="UNSAFE", input_reason=inj.reason,
-        )
+    # 2. structural jailbreak / injection heuristics, over every decoded variant
+    #    too: an encoded "ignore previous instructions" must not pass just
+    #    because the visible text is an opaque blob. (Its own loop, after the
+    #    filter/backstop loop, so the existing precedence of reasons is kept.)
+    for variant in variants:
+        inj = injection_check(variant)
+        if inj.decision == "UNSAFE":
+            return Result(
+                "UNSAFE", inj.reason, "",
+                public_message=_MSG_INPUT_BLOCKED,
+                input_decision="UNSAFE", input_reason=inj.reason,
+            )
 
-    # 3. ML intent classifier (fail-closed inside judge_input).
+    # 3. ML intent classifier on the visible prompt (fail-closed inside judge_input).
     verdict = judge_input(canonical)
     if verdict.decision == "UNSAFE":
         return Result(

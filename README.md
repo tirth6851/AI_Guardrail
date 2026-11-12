@@ -35,7 +35,7 @@ normalize (unicode fold / leetspeak / zero-width strip / base64 decode)
     ↓
 local_filter (banned.txt, phrase-aware)  +  backstop_check (harmful_terms.txt, intent-gated)
     ↓
-injection_check (structural jailbreak heuristics)
+injection_check (structural jailbreak heuristics, on every decoded variant)
     ↓
 judge_input  ← TF-IDF + Logistic Regression classifier, threshold 0.30 (fail-closed)
     ↓ (if SAFE)
@@ -168,7 +168,7 @@ python -m pytest
 
 Covers: the regression gate (`tests/test_gate.py` — severe recall, harmful
 recall, macro-F1 floor, and named anchor cases that must never flip), pipeline
-unit tests (`tests/test_pipeline.py`), the API layer including auth/rate
+unit tests (`tests/test_pipeline.py`), encoded-injection tests (`tests/test_encoded_injection.py`), the API layer including auth/rate
 limiting/offender escalation (`tests/test_api.py`), tenant resolution
 (`tests/test_policy.py`), and the rate limiter/offender tracker in isolation
 (`tests/test_abuse.py`).
