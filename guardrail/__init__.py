@@ -47,7 +47,7 @@ from guardrail.filter import local_filter
 from guardrail.injection import injection_check
 from guardrail.judge import judge_input, judge_output
 from guardrail.model import MODEL_NAME, call_model
-from guardrail.normalize import expansions, normalize
+from guardrail.normalize import expansions, injection_forms, normalize
 from guardrail import pii
 
 # Generic, non-informative messages for callers. The detailed "why" (which layer,
@@ -101,7 +101,7 @@ def screen_input(prompt: str) -> Result:
     #    too: an encoded "ignore previous instructions" must not pass just
     #    because the visible text is an opaque blob. (Its own loop, after the
     #    filter/backstop loop, so the existing precedence of reasons is kept.)
-    for variant in variants:
+    for variant in injection_forms(variants):
         inj = injection_check(variant)
         if inj.decision == "UNSAFE":
             return Result(

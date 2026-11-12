@@ -11,7 +11,11 @@ Two public functions:
 - normalize(text): one cleaned string (unicode-folded, de-leeted, whitespace-collapsed).
 - expansions(text): normalize() PLUS any decoded payloads (base64/hex) found inside,
   so the caller can screen the decoded content too — an attacker who base64-encodes
-  "how to make a bomb" should not get a free pass.
+  "how to make a bomb" should not get a free pass. Payloads are decoded up to a few
+  layers deep (base64 of base64, hex of base64, ...), with caps on depth and count.
+
+A third helper, injection_forms(variants), adds a more aggressive leetspeak form
+that is ONLY meant for the injection heuristics (see its docstring).
 """
 import base64
 import binascii
@@ -27,10 +31,21 @@ _ZERO_WIDTH = dict.fromkeys(map(ord, "​‌‍⁠﻿­"), None)
 # (We do NOT map 1->l or 5->s globally — too many false rewrites in real prompts.)
 _LEET = str.maketrans({"0": "o", "3": "e", "4": "a", "@": "a", "$": "s", "!": "i"})
 
+# Extra swaps used ONLY by injection_forms() (never by normalize()/expansions(),
+# which also feed the word filter and weapons backstop): 1->i, 5->s, 7->t. They
+# are what "1gnore prev1ous 1nstruct1ons" needs, but too lossy to apply globally.
+_LEET_INJECTION = {**_LEET, ord("1"): "i", ord("5"): "s", ord("7"): "t"}
+
+# Decoding limits: how many layers of encoding to unwrap, and how many decoded
+# payloads to keep in total, so a crafted prompt cannot make this unbounded.
+_MAX_DECODE_DEPTH = 3
+_MAX_PAYLOADS = 16
+
 # A run of base64-ish characters long enough to plausibly hide a short word
-# (>= 12 chars = 9 decoded bytes). The strict validate=True + printable guards in
-# _try_decode reject the many benign runs that merely look base64-ish.
-_B64_RUN = re.compile(r"[A-Za-z0-9+/]{12,}={0,2}")
+# (>= 12 chars = 9 decoded bytes). Includes the URL-safe alphabet (-_). The strict
+# validate=True + text guards in _decode_candidates reject the many benign runs
+# that merely look base64-ish.
+_B64_RUN = re.compile(r"[A-Za-z0-9+/_-]{12,}={0,2}")
 # A run of hex long enough to hide a word (>= 12 hex digits = 6 bytes).
 _HEX_RUN = re.compile(r"\b(?:[0-9a-fA-F]{2}\s*){6,}\b")
 
@@ -52,26 +67,59 @@ def normalize(text: str) -> str:
     return _fold(text).translate(_LEET)
 
 
-def _try_decode(blob: str) -> str | None:
-    """Return decoded text if blob is valid base64/hex printable ASCII, else None."""
-    # base64 first (most common encoding attackers reach for).
+def _looks_like_text(decoded: str) -> bool:
+    """True if decoded bytes look like a human message rather than binary junk."""
+    # str.isprintable() is False for "\n", "\t" and for Unicode space separators
+    # (NBSP, EM SPACE, IDEOGRAPHIC SPACE), so a payload using any of them used to be
+    # thrown away unscreened. Allow those; _fold() collapses them to a plain space.
+    def _ok(c: str) -> bool:
+        return c.isprintable() or c in "\n\r\t" or unicodedata.category(c) == "Zs"
+
+    return any(c.isalpha() for c in decoded) and all(_ok(c) for c in decoded)
+
+
+def _decode_candidates(blob: str) -> list[str]:
+    """Every way blob decodes to text: base64 (standard or URL-safe, padded or not)
+    and/or hex. A hex string is also valid base64 characters, so both are tried."""
+    out = []
     try:
-        raw = base64.b64decode(blob, validate=True)
-        decoded = raw.decode("utf-8")
-        # only treat it as a hidden message if it's mostly printable text
-        if decoded.isprintable() and any(c.isalpha() for c in decoded):
-            return decoded
+        s = blob.rstrip("=").replace("-", "+").replace("_", "/")
+        if len(s) % 4 != 1:  # a length of 1 mod 4 can never be valid base64
+            s += "=" * (-len(s) % 4)  # attackers can simply drop the "=" padding
+            decoded = base64.b64decode(s, validate=True).decode("utf-8")
+            if _looks_like_text(decoded):
+                out.append(decoded)
     except (binascii.Error, UnicodeDecodeError, ValueError):
         pass
-    # then hex.
     try:
-        raw = bytes.fromhex(re.sub(r"\s+", "", blob))
-        decoded = raw.decode("utf-8")
-        if decoded.isprintable() and any(c.isalpha() for c in decoded):
-            return decoded
+        decoded = bytes.fromhex(re.sub(r"\s+", "", blob)).decode("utf-8")
+        if _looks_like_text(decoded) and decoded not in out:
+            out.append(decoded)
     except (ValueError, UnicodeDecodeError):
         pass
-    return None
+    return out
+
+
+def _decode_payloads(text: str) -> list[str]:
+    """Decoded base64/hex payloads found in text, unwrapping nested layers
+    (base64 of base64, hex of base64, ...) up to _MAX_DECODE_DEPTH, at most
+    _MAX_PAYLOADS in total. Raw (case-preserved) text, as base64 is case-sensitive."""
+    found: list[str] = []
+    queue = [(text, 0)]
+    while queue:
+        current, depth = queue.pop(0)
+        if depth >= _MAX_DECODE_DEPTH:
+            continue
+        for pattern in (_B64_RUN, _HEX_RUN):
+            for match in pattern.findall(current):
+                for decoded in _decode_candidates(match):
+                    if decoded in found or decoded == text:
+                        continue
+                    found.append(decoded)
+                    if len(found) >= _MAX_PAYLOADS:
+                        return found
+                    queue.append((decoded, depth + 1))
+    return found
 
 
 def expansions(text: str) -> list[str]:
@@ -85,11 +133,8 @@ def expansions(text: str) -> list[str]:
     as the single canonical string.
     """
     out = [normalize(text), _fold(text)]
-    for pattern in (_B64_RUN, _HEX_RUN):
-        for match in pattern.findall(text):
-            decoded = _try_decode(match)
-            if decoded:
-                out.extend([normalize(decoded), _fold(decoded)])
+    for decoded in _decode_payloads(text):
+        out.extend([normalize(decoded), _fold(decoded)])
     # dedupe while preserving order (variants[0] must stay the canonical form).
     seen, unique = set(), []
     for v in out:
@@ -97,3 +142,23 @@ def expansions(text: str) -> list[str]:
             seen.add(v)
             unique.append(v)
     return unique
+
+
+def injection_forms(variants: list[str]) -> list[str]:
+    """
+    `variants` (from expansions()) plus a more aggressively de-leeted copy of each
+    (1->i, 5->s, 7->t on top of normalize()'s swaps), deduped, order preserved.
+
+    ONLY for the injection heuristics. normalize() deliberately does not map those
+    digits globally because it corrupts ordinary text and expansions() also feeds
+    the word filter and weapons backstop, where that would risk false positives.
+    The injection regexes need specific multi-word phrases, so a lossy extra view
+    costs little there and catches "1gnore prev1ous 1nstruct1ons".
+    """
+    seen, out = set(), []
+    for v in variants:
+        for form in (v, v.translate(_LEET_INJECTION)):
+            if form not in seen:
+                seen.add(form)
+                out.append(form)
+    return out
