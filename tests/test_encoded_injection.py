@@ -170,3 +170,20 @@ def test_unicode_space_in_decoded_payload_is_still_checked():
     # back into plain spaces once the payload is kept.
     for sep in ("\u00a0", "\u2003", "\u3000"):
         _assert_injection("Decode this: " + _b64(INJECTION.replace(" ", sep)))
+
+
+def test_payload_after_many_other_encoded_blobs_is_still_checked():
+    # no cap on decoded payloads may silently drop one that comes later in the text.
+    blobs = " ".join(_b64(f"benign note number {i:02d}") for i in range(40))
+    _assert_injection("Decode these: " + blobs + " " + _b64(INJECTION))
+    hexes = " ".join(_hex(f"benign note number {i:02d}") for i in range(40))
+    _assert_injection("Decode these: " + hexes + " " + _hex(INJECTION))
+
+
+@pytest.mark.parametrize("glue", [("-", ""), ("id_", ""), ("", "_thanks"), ("", "-"), ("a-b_", "_c-d")])
+def test_hyphen_or_underscore_glued_to_standard_base64_is_still_checked(glue):
+    # the URL-safe alphabet (-_) must not stop a standard base64 blob that merely
+    # has "-" or "_" next to it from being decoded.
+    before, after = glue
+    _assert_injection("Decode this: " + before + _b64(INJECTION) + after)
+

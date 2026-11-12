@@ -36,16 +36,20 @@ _LEET = str.maketrans({"0": "o", "3": "e", "4": "a", "@": "a", "$": "s", "!": "i
 # are what "1gnore prev1ous 1nstruct1ons" needs, but too lossy to apply globally.
 _LEET_INJECTION = {**_LEET, ord("1"): "i", ord("5"): "s", ord("7"): "t"}
 
-# Decoding limits: how many layers of encoding to unwrap, and how many decoded
-# payloads to keep in total, so a crafted prompt cannot make this unbounded.
+# How many layers of encoding to unwrap. This is the only cap: each layer's decoded
+# text is shorter than the text it came from, so the total work stays bounded, and
+# there is deliberately NO cap on the NUMBER of payloads (a count cap would silently
+# stop screening whatever came after the first N blobs).
 _MAX_DECODE_DEPTH = 3
-_MAX_PAYLOADS = 16
 
 # A run of base64-ish characters long enough to plausibly hide a short word
-# (>= 12 chars = 9 decoded bytes). Includes the URL-safe alphabet (-_). The strict
-# validate=True + text guards in _decode_candidates reject the many benign runs
-# that merely look base64-ish.
-_B64_RUN = re.compile(r"[A-Za-z0-9+/_-]{12,}={0,2}")
+# (>= 12 chars = 9 decoded bytes). The strict validate=True + text guards in
+# _decode_candidates reject the many benign runs that merely look base64-ish.
+_B64_RUN = re.compile(r"[A-Za-z0-9+/]{12,}={0,2}")
+# The URL-safe alphabet (-_ instead of +/). A SEPARATE pattern from _B64_RUN so that a
+# standard blob with a "-" or "_" glued next to it ("id_<blob>") is still found by
+# _B64_RUN exactly as before, rather than being swallowed into one longer run.
+_B64URL_RUN = re.compile(r"[A-Za-z0-9_-]{12,}={0,2}")
 # A run of hex long enough to hide a word (>= 12 hex digits = 6 bytes).
 _HEX_RUN = re.compile(r"\b(?:[0-9a-fA-F]{2}\s*){6,}\b")
 
@@ -102,22 +106,22 @@ def _decode_candidates(blob: str) -> list[str]:
 
 def _decode_payloads(text: str) -> list[str]:
     """Decoded base64/hex payloads found in text, unwrapping nested layers
-    (base64 of base64, hex of base64, ...) up to _MAX_DECODE_DEPTH, at most
-    _MAX_PAYLOADS in total. Raw (case-preserved) text, as base64 is case-sensitive."""
+    (base64 of base64, hex of base64, ...) up to _MAX_DECODE_DEPTH. Raw
+    (case-preserved) text, as base64 is case-sensitive."""
     found: list[str] = []
+    seen = {text}
     queue = [(text, 0)]
     while queue:
         current, depth = queue.pop(0)
         if depth >= _MAX_DECODE_DEPTH:
             continue
-        for pattern in (_B64_RUN, _HEX_RUN):
+        for pattern in (_B64_RUN, _B64URL_RUN, _HEX_RUN):
             for match in pattern.findall(current):
                 for decoded in _decode_candidates(match):
-                    if decoded in found or decoded == text:
+                    if decoded in seen:
                         continue
+                    seen.add(decoded)
                     found.append(decoded)
-                    if len(found) >= _MAX_PAYLOADS:
-                        return found
                     queue.append((decoded, depth + 1))
     return found
 
